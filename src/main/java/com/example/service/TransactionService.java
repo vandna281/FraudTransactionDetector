@@ -2,6 +2,7 @@ package com.example.service;
 
 import com.example.entity.Transaction;
 import com.example.entity.TransactionValidation;
+import com.example.exception.FraudDetectionException;
 import com.example.repository.TransactionRepository;
 import com.example.repository.TransactionValidationRepository;
 import org.slf4j.Logger;
@@ -10,6 +11,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.redis.core.RedisTemplate;
 import org.springframework.kafka.annotation.KafkaListener;
 import org.springframework.kafka.core.KafkaTemplate;
+import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
 
 import java.util.List;
@@ -34,16 +36,29 @@ public class TransactionService {
     @Autowired
     private KafkaTemplate<String, String> kafkaTemplate;
 
+    @Async("taskExecutor")
     public boolean validateTransaction(Transaction transaction) {
         logger.info("Validating the transaction");
-        transaction = updatingTransactionMetadata(transaction);
-        boolean isFraud = isFraudTrxn(transaction);
-        if (isFraud) {
-            logger.info("Handling fraudulent transaction '{}' event by publishing it to kafka topic", transaction.getId());
-            kafkaTemplate.send("fraud_transactions", "Fraud detected for transaction: " + transaction.getId());
-            transaction.setFraudulent(true);
-            logger.info("Updating transaction status in transaction table for {}", transaction.getId());
-            updatingTransactionMetadata(transaction);
+        boolean isFraud = false;
+        try {
+            transaction = updatingTransactionMetadata(transaction);
+
+            Thread.sleep(1000);
+
+            isFraud = isFraudTrxn(transaction);
+            if (isFraud) {
+                logger.info("Handling fraudulent transaction '{}' event by publishing it to kafka topic", transaction.getId());
+                kafkaTemplate.send("fraud_transactions", "Fraud detected for transaction: " + transaction.getId());
+                transaction.setFraudulent(true);
+                logger.info("Updating transaction status in transaction table for {}", transaction.getId());
+                updatingTransactionMetadata(transaction);
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new FraudDetectionException("Thread interrupted during fraud analysis");
+        } catch (Exception e) {
+            logger.error("Error while updating new transaction : {} | {}", transaction.getId(), e.getMessage());
+            throw new FraudDetectionException("Error while updating new transaction : " + transaction.getId() + " | " + e.getMessage());
         }
         return isFraud;
     }
